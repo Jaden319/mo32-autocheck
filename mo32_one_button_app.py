@@ -1,5 +1,5 @@
 
-import io, os
+import io, os, uuid, sqlite3, tempfile
 from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
@@ -11,12 +11,61 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from PIL import Image
 
-APP_VER = "v8.4 DOCX-only (Vessel Inspection + Search)"
+APP_VER = "v8.5 DOCX-only (Vessel Inspection + Search + SQLite)"
 st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
 
 TODAY = date.today()
 TODAY_STR = TODAY.strftime("%d-%m-%Y")  # DD-MM-YYYY
 DATE_FORMATS = ("%d-%m-%Y","%d/%m/%Y","%Y-%m-%d")
+
+# --- SQLite helper (uses a DB in the temp folder so it's writable on Streamlit Cloud) ---
+TMP_ROOT = tempfile.gettempdir()
+DB_PATH = os.path.join(TMP_ROOT, "inspections.db")
+os.makedirs(TMP_ROOT, exist_ok=True)
+
+def db_init():
+    try:
+        con = sqlite3.connect(DB_PATH, check_same_thread=False)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS inspections (
+            id TEXT PRIMARY KEY,
+            vessel TEXT,
+            imo TEXT,
+            created_at TEXT,
+            case_dir TEXT,
+            docx_path TEXT
+        )
+        """)
+        con.commit()
+        return con
+    except Exception as e:
+        st.warning(f"(DB unavailable: {e})")
+        return None
+
+DB = db_init()
+
+def db_insert(vessel, imo, created_at, case_dir, docx_path):
+    if not DB: return
+    try:
+        DB.execute("INSERT OR REPLACE INTO inspections (id, vessel, imo, created_at, case_dir, docx_path) VALUES (?, ?, ?, ?, ?, ?)",
+                   (uuid.uuid4().hex, vessel or "", imo or "", created_at, case_dir or "", docx_path or ""))
+        DB.commit()
+    except Exception as e:
+        st.warning(f"(DB insert skipped: {e})")
+
+def db_search(vessel_like, imo_like):
+    if not DB: return pd.DataFrame([], columns=["vessel","imo","created_at","case_dir","docx_path"])
+    try:
+        vl = f"%{vessel_like.strip()}%" if vessel_like else "%"
+        il = f"%{imo_like.strip()}%" if imo_like else "%"
+        df = pd.read_sql_query(
+            "SELECT vessel, imo, created_at, case_dir, docx_path FROM inspections WHERE vessel LIKE ? AND imo LIKE ? ORDER BY created_at DESC",
+            DB, params=(vl, il)
+        )
+        return df
+    except Exception as e:
+        st.warning(f"(DB search skipped: {e})")
+        return pd.DataFrame([], columns=["vessel","imo","created_at","case_dir","docx_path"])
 
 def asciiize(s):
     if s is None: return ""
@@ -219,6 +268,7 @@ def evaluate(df):
         })
     return pd.DataFrame(rows)
 
+# --- Upload helpers ---
 def ensure_jpeg(data_bytes):
     try:
         im = Image.open(io.BytesIO(data_bytes))
@@ -439,8 +489,19 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
     buff = io.BytesIO(); doc.save(buff); buff.seek(0); return buff
 
 def save_case(results_df, df_original, photos_map, photos_loose_map):
-    base = "mo32_cases"; os.makedirs(base, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S"); case_dir = os.path.join(base, f"case_{stamp}"); os.makedirs(case_dir, exist_ok=True)
+    # Use temp dir to avoid permission issues and file-collision on Streamlit Cloud
+    base = os.path.join(TMP_ROOT, "mo32_cases")
+    # If something named base exists but is NOT a dir, remove and recreate
+    if os.path.exists(base) and not os.path.isdir(base):
+        try: os.remove(base)
+        except Exception: pass
+    os.makedirs(base, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    uniq = uuid.uuid4().hex[:6]
+    case_dir = os.path.join(base, f"case_{stamp}_{uniq}")
+    os.makedirs(case_dir, exist_ok=False)
+
     df_original.to_csv(os.path.join(case_dir,"inputs.csv"), index=False)
     results_df.to_csv(os.path.join(case_dir,"results.csv"), index=False)
     for label, mapping in [("crane",photos_map), ("loose",photos_loose_map)]:
@@ -450,6 +511,7 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
             for i,data in enumerate(blobs):
                 with open(os.path.join(pdir, f"photo_{i+1}.jpg"), "wb") as imgf:
                     imgf.write(data)
+
     build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=os.path.join(case_dir,"MO32_Crane_Compliance_Report.docx"))
     return case_dir
 
@@ -458,7 +520,7 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
 # -------------------------
 def page_inspection():
     st.title("Vessel Inspection")
-    st.caption(APP_VER + " – DOCX export only; CSV import; photos embedded.")
+    st.caption(APP_VER + " – DOCX export; photos embedded; saved to temp folder; DB metadata.")
 
     with st.sidebar:
         st.header("Options")
@@ -575,6 +637,14 @@ def page_inspection():
             docx_io = build_docx(out_df, df_input, photos_map, photos_loose_map)
             st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_real")
             case_dir = save_case(out_df, df_input, photos_map, photos_loose_map)
+            docx_path = os.path.join(case_dir, "MO32_Crane_Compliance_Report.docx")
+
+            # Insert into DB
+            vessel_val = str(df_input.get("Vessel Name").iloc[0]) if "Vessel Name" in df_input.columns and len(df_input) else ""
+            imo_val = str(df_input.get("IMO").iloc[0]) if "IMO" in df_input.columns and len(df_input) else ""
+            created_at = datetime.now().isoformat(timespec="seconds")
+            db_insert(vessel_val, imo_val, created_at, case_dir, docx_path)
+
             st.info(f"Saved a copy of this submission to: {case_dir}")
         except Exception as e:
             st.error(f"Error during evaluation: {e}")
@@ -599,52 +669,65 @@ def page_inspection():
 # -------------------------
 def page_search():
     st.title("Search Vessels")
-    st.caption("Find previous inspections by Vessel Name or IMO number, and download past DOCX reports.")
-
-    base = "mo32_cases"
-    if not os.path.isdir(base):
-        st.info("No saved cases yet. Generate a report first from the Vessel Inspection page.")
-        return
+    st.caption("Search DB (SQLite) and saved cases in temp folder; download past DOCX reports.")
 
     q_name = st.text_input("Vessel Name (partial ok)", key="q_vessel").strip()
     q_imo  = st.text_input("IMO Number (exact or partial)", key="q_imo").strip()
 
-    # Scan existing cases
+    # --- DB results
+    st.markdown("#### Database results (SQLite)")
+    df_db = db_search(q_name, q_imo)
+    if df_db is not None and len(df_db):
+        for i, r in df_db.iterrows():
+            c1, c2, c3, c4 = st.columns([3,2,2,2])
+            c1.markdown(f"**{r['vessel'] or '(No Vessel Name)'}**  \nIMO: {r['imo'] or '-'}")
+            c2.markdown(f"**Created:** {r['created_at']}")
+            c3.markdown(f"**Case dir:** {os.path.basename(r['case_dir'] or '')}")
+            docx_path = r.get("docx_path")
+            if docx_path and os.path.isfile(docx_path):
+                try:
+                    data = open(docx_path, "rb").read()
+                    c4.download_button("Download DOCX", data, file_name=f"{os.path.basename(r['case_dir']) or 'report'}.docx", key=f"dl_db_{i}")
+                except Exception as e:
+                    c4.write(f"(DOCX not readable: {e})")
+            else:
+                c4.write("(No DOCX)")
+            st.divider()
+    else:
+        st.info("No matches in database.")
+
+    # --- Legacy folder scan in temp
+    st.markdown("#### Saved cases in temp folder")
+    base = os.path.join(TMP_ROOT, "mo32_cases")
+    if not os.path.isdir(base):
+        st.info("No saved case folders yet.")
+        return
+
     rows = []
     for d in sorted(os.listdir(base)):
         case_dir = os.path.join(base, d)
-        if not os.path.isdir(case_dir): 
-            continue
+        if not os.path.isdir(case_dir): continue
         inputs = os.path.join(case_dir, "inputs.csv")
         results = os.path.join(case_dir, "results.csv")
         docx = os.path.join(case_dir, "MO32_Crane_Compliance_Report.docx")
-        if not os.path.isfile(inputs):
-            continue
+        if not os.path.isfile(inputs): continue
         try:
             df_in = pd.read_csv(inputs)
             vessel = str(df_in.get("Vessel Name").iloc[0]) if "Vessel Name" in df_in.columns and len(df_in) else ""
             imo = str(df_in.get("IMO").iloc[0]) if "IMO" in df_in.columns and len(df_in) else ""
-            # stamp included in case folder name: case_YYYYmmdd_HHMMSS
             date_guess = d.replace("case_", "")
             rows.append({
-                "case": d,
-                "vessel": vessel,
-                "imo": imo,
-                "date": date_guess,
-                "inputs": inputs,
-                "results": results if os.path.isfile(results) else "",
+                "case": d, "vessel": vessel, "imo": imo, "date": date_guess,
+                "inputs": inputs, "results": results if os.path.isfile(results) else "",
                 "docx": docx if os.path.isfile(docx) else ""
             })
         except Exception:
             continue
 
-    # Filter
     def match(row):
         ok = True
-        if q_name:
-            ok = ok and (q_name.lower() in (row["vessel"] or "").lower())
-        if q_imo:
-            ok = ok and (q_imo.lower() in (row["imo"] or "").lower())
+        if q_name: ok = ok and (q_name.lower() in (row["vessel"] or "").lower())
+        if q_imo: ok = ok and (q_imo.lower() in (row["imo"] or "").lower())
         return ok
 
     filtered = [r for r in rows if match(r)]
@@ -654,10 +737,9 @@ def page_search():
         st.write(f"Showing {len(filtered)} cases. Enter search terms to filter.")
 
     if not filtered:
-        st.info("No matches.")
+        st.info("No matches in folders.")
         return
 
-    # Show results
     for r in filtered:
         with st.container():
             c1, c2, c3, c4 = st.columns([3,2,2,2])
