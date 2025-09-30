@@ -11,7 +11,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from PIL import Image
 
-APP_VER = "v8.5 DOCX-only (Vessel Inspection + Search + SQLite)"
+APP_VER = "v8.5 Database added SQLite. "
 st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
 
 TODAY = date.today()
@@ -520,7 +520,7 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
 # -------------------------
 def page_inspection():
     st.title("Vessel Inspection")
-    st.caption(APP_VER + " – DOCX export; photos embedded; saved to temp folder; DB metadata.")
+    st.caption(APP_VER + " – More version to be updated with. good for testing.")
 
     with st.sidebar:
         st.header("Options")
@@ -669,7 +669,7 @@ def page_inspection():
 # -------------------------
 def page_search():
     st.title("Search Vessels")
-    st.caption("Search DB (SQLite) and saved cases in temp folder; download past DOCX reports.")
+    st.caption("Search DB (SQLite) for Reports.")
 
     q_name = st.text_input("Vessel Name (partial ok)", key="q_vessel").strip()
     q_imo  = st.text_input("IMO Number (exact or partial)", key="q_imo").strip()
@@ -763,8 +763,8 @@ with st.sidebar:
     st.markdown("## Pages")
     page = st.radio("Navigate", ["Vessel Inspection", "Search Vessels"], index=0, key="page_radio")
 
-st.title("MO32 Crane Compliance - Auto Check")
-if page == "Vessel Inspection":
+st.title("Crane Compliance - Checker")
+if page == "Inspection":
     page_inspection()
 else:
     page_search()
