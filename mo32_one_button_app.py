@@ -10,7 +10,7 @@ from fpdf import FPDF
 APP_VER = "v7.6"
 st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
 st.title("MO32 Crane Compliance - Auto Check")
-st.caption("Per-crane Shift/Weather + Loose Gear, photos, contradictions, due-soon, PDF/DOCX. ASCII-safe PDF. (DuplicateWidgetID fixed)")
+st.caption("For Stevedores made by a stevedore, Example but not complete")
 
 TODAY = date.today()
 DATE_FORMATS = ("%Y-%m-%d","%d/%m/%Y","%d-%m-%Y")
