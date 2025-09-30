@@ -1,4 +1,3 @@
-# run_app.py (v7.3 launcher)
 import sys, webbrowser, threading, time
 from streamlit.web import cli as stcli
 def open_browser_later():
