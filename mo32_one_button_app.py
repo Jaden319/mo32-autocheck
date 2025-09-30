@@ -1,9 +1,8 @@
-# v8.2.4 – All fixes merged
-import io, os, tempfile
+
+import io, os
 from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
-from fpdf import FPDF
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -12,10 +11,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from PIL import Image
 
-APP_VER = "v8.2.4"
+APP_VER = "v8.4 DOCX-only (Vessel Inspection + Search)"
 st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
-st.title("MO32 Crane Compliance - Auto Check")
-st.caption("Photos fixed; DD-MM-YYYY; professional DOCX + PDF; PDF download fixed.")
 
 TODAY = date.today()
 TODAY_STR = TODAY.strftime("%d-%m-%Y")  # DD-MM-YYYY
@@ -23,7 +20,7 @@ DATE_FORMATS = ("%d-%m-%Y","%d/%m/%Y","%Y-%m-%d")
 
 def asciiize(s):
     if s is None: return ""
-    trans = {"–":"-","—":"-","‑":"-","•":"*","·":"*","“":'"',"”":'"',"‘":"'", "’":"'", "…":"...", "°":" deg ","×":"x","✓":"OK","\u00a0":" "}
+    trans = {"–":"-","—":"-","-":"-","•":"*","·":"*","“":'"',"”":'"',"‘":"'", "’":"'", "…":"...", "°":" deg ","×":"x","✓":"OK","\u00a0":" "}
     out = str(s)
     for k,v in trans.items(): out = out.replace(k,v)
     try:
@@ -99,7 +96,6 @@ def yn(v): return str(v).strip().upper()=="Y"
 def days_since(d): return None if not d else (TODAY-d).days
 def days_left_since(d, interval):
     if not d: return None
-    from datetime import timedelta
     due = d + timedelta(days=interval)
     return (due - TODAY).days
 
@@ -223,7 +219,6 @@ def evaluate(df):
         })
     return pd.DataFrame(rows)
 
-# --- Upload helpers: stash bytes + optional JPEG conversion ---
 def ensure_jpeg(data_bytes):
     try:
         im = Image.open(io.BytesIO(data_bytes))
@@ -233,124 +228,6 @@ def ensure_jpeg(data_bytes):
         return out.getvalue()
     except Exception:
         return data_bytes
-
-def stash_uploads(file_list, convert_to_jpeg=True):
-    blobs = []
-    for f in file_list or []:
-        try:
-            data = f.getvalue()  # capture bytes once
-            blobs.append(ensure_jpeg(data) if convert_to_jpeg else data)
-        except Exception:
-            pass
-    return blobs
-
-with st.sidebar:
-    st.header("Options")
-    st.caption("Professional DOCX + PDF (photos embedded; DD-MM-YYYY)")
-    st.subheader("CSV (optional)")
-    csv_up = st.file_uploader("Import CSV (optional)", type=["csv"], key="u_csv")
-    if csv_up is not None:
-        try:
-            df_loaded = pd.read_csv(csv_up)
-            st.success("CSV imported. Use 'Evaluate imported CSV' to generate reports.")
-            if st.button("Evaluate imported CSV", key="btn_eval_csv"):
-                out_df = evaluate(df_loaded)
-                st.subheader("Results (PASS/ATTENTION/FAIL) — Imported CSV")
-                st.dataframe(out_df, use_container_width=True)
-                docx_io = build_docx(out_df, df_loaded, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
-                st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_csv")
-                pdf_io = build_pdf(out_df, df_loaded, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
-                st.download_button("Download PDF report (.pdf)", pdf_io.getvalue(), file_name="MO32_Crane_Compliance_Report.pdf", key="dl_pdf_csv")
-        except Exception as e:
-            st.error(f"Error reading CSV: {e}")
-    if st.button("Download blank CSV", key="btn_blankcsv"):
-        df_blank = pd.DataFrame([[i+1] + [""]*(len(CHECK_COLUMNS)-1) for i in range(4)], columns=CHECK_COLUMNS)
-        st.download_button("Save blank CSV", df_blank.to_csv(index=False).encode("utf-8"), file_name="Crane_Compliance_MO32_Blank.csv", key="dl_blankcsv")
-
-st.markdown("### Job/Vessel info")
-colv1, colv2, colv3 = st.columns(3)
-with colv1: vessel = st.text_input("Vessel Name","", key="vessel")
-with colv2: imo = st.text_input("IMO","", key="imo")
-with colv3: operator = st.text_input("Inspector / Role","", key="operator")
-
-st.markdown("### Crane checks")
-crane_data = []; photos_map = {}; photos_loose_map = {}
-for n in [1,2,3,4]:
-    with st.expander(f"Crane {n}", expanded=(n==1)):
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            make_model = st.text_input(f"Crane {n} Make/Model", key=f"mm{n}")
-            serial = st.text_input(f"Crane {n} Serial Number", key=f"sn{n}")
-        with c2:
-            swl = st.text_input(f"Crane {n} SWL (t)", key=f"swl{n}")
-            install = st.text_input(f"Install/Commission Date (DD-MM-YYYY)", key=f"inst{n}")
-        with c3:
-            proof = st.text_input("Last 5-year Proof Test Date (DD-MM-YYYY)", key=f"p5{n}")
-            annual = st.text_input("Last Annual Thorough Exam Date (DD-MM-YYYY)", key=f"a12{n}")
-        c4,c5 = st.columns(2)
-        with c4:
-            annual_by = st.text_input("Annual Exam By (Competent/Responsible Person)", key=f"by{n}")
-            cert_no = st.text_input("Certificate of Test # (AMSA 365/642/etc)", key=f"cert{n}")
-        with c5:
-            st.markdown("**Y/N items** (tick Y if compliant)")
-            y_cert = st.selectbox("Certificate Current? (AMSA 365/642 form)", ["","Y","N"], key=f"yc{n}")
-            y_reg  = st.selectbox("Register of MHE Onboard? (Maintenance & repair log)", ["","Y","N"], key=f"yr{n}")
-            y_pre  = st.selectbox("Pre-use Visual Exam OK? (before operation)", ["","Y","N"], key=f"yp{n}")
-            y_plan = st.selectbox("Rigging Plan/Drawings Onboard? (latest revision available)", ["","Y","N"], key=f"ypl{n}")
-            y_ctrl = st.selectbox("Controls labelled & accessible? (labels present, reachable)", ["","Y","N"], key=f"yct{n}")
-            y_lim  = st.selectbox("Limit switches operational?", ["","Y","N"], key=f"yl{n}")
-            y_brk  = st.selectbox("Brakes operational?", ["","Y","N"], key=f"yb{n}")
-            y_vis  = st.selectbox("Operator visibility adequate? (consider lighting & weather)", ["","Y","N"], key=f"yv{n}")
-            y_wth  = st.selectbox("Weather protection at controls? (canopy/cover, no ingress)", ["","Y","N"], key=f"yw{n}")
-            y_acc  = st.selectbox("Access/escape to cabin compliant? (ladder/handrails clear)", ["","Y","N"], key=f"ya{n}")
-        w1,w2 = st.columns([1,2])
-        with w1:
-            shift = st.selectbox("Shift/Lighting", ["","Day","Evening","Night"], key=f"shift{n}")
-        with w2:
-            wx = st.text_input("Weather conditions (e.g., Raining, Storming, Fog, Clear)", key=f"wx{n}")
-        notes = st.text_area("Notes / Defects", key=f"notes{n}", height=100)
-
-        # Uploads -> BYTES (immediately captured)
-        up_crane = st.file_uploader(f"Crane {n} photos (JPG/PNG/HEIC; up to 8)", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True, key=f"photos{n}")
-        photos_map[n] = stash_uploads(up_crane)
-
-        st.markdown("#### Loose Gear (hook/block)")
-        lg1, lg2, lg3 = st.columns(3)
-        with lg1:
-            lg_serial = st.text_input("Hook/Block Serial Number", key=f"lgsn{n}")
-            lg_cert   = st.text_input("Certificate Number", key=f"lgcert{n}")
-        with lg2:
-            lg_swl = st.text_input("Hook SWL (t)", key=f"lgswl{n}")
-            lg_date = st.text_input("Last Inspection/Proof Date (DD-MM-YYYY)", key=f"lgdate{n}")
-        with lg3:
-            lg_notes = st.text_area("Loose Gear Notes", key=f"lgnotes{n}", height=80)
-
-        up_loose = st.file_uploader(f"Crane {n} loose gear photos (JPG/PNG/HEIC; up to 6)", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True, key=f"photos_loose{n}")
-        photos_loose_map[n] = stash_uploads(up_loose)
-
-        crane_data.append({
-            "Crane #": n, "Vessel Name": vessel, "IMO": imo,
-            "Crane Make/Model": make_model, "Serial Number": serial, "SWL (t)": swl,
-            "Install/Commission Date": install, "Last 5-year Proof Test Date": proof, "Last Annual Thorough Exam Date": annual,
-            "Annual Exam By (Competent/Responsible Person)": annual_by, "Certificate of Test # (AMSA 365/642/etc)": cert_no,
-            "Certificate Current? (Y/N)": y_cert, "Register of MHE Onboard? (Y/N)": y_reg, "Pre-use Visual Exam OK? (Y/N)": y_pre,
-            "Rigging Plan/Drawings Onboard? (Y/N)": y_plan, "Controls layout labelled & accessible? (Y/N)": y_ctrl,
-            "Limit switches operational? (Y/N)": y_lim, "Brakes operational? (Y/N)": y_brk, "Operator visibility adequate? (Y/N)": y_vis,
-            "Visibility: Shift (Day/Evening/Night)": shift, "Visibility: Weather conditions": wx,
-            "Weather protection at winch/controls? (Y/N)": y_wth, "Access/escape to cabin compliant? (Y/N)": y_acc, "Notes / Defects": notes,
-            "Loose Gear: Hook/Block Serial Number": lg_serial, "Loose Gear: Hook SWL (t)": lg_swl, "Loose Gear: Certificate Number": lg_cert,
-            "Loose Gear: Last Inspection/Proof Date": lg_date, "Loose Gear: Notes": lg_notes
-        })
-
-st.divider()
-left, mid, right = st.columns([2,1,1])
-eval_clicked = left.button("Evaluate & Generate Report", type="primary", use_container_width=True, key="btn_eval")
-csv_clicked  = mid.button("Download current inputs as CSV", use_container_width=True, key="btn_csv")
-demo_clicked = right.button("Try demo (sample data)", use_container_width=True, key="btn_demo")
-
-if csv_clicked:
-    df_now = pd.DataFrame(crane_data, columns=CHECK_COLUMNS)
-    st.download_button("Save this CSV now", df_now.to_csv(index=False).encode("utf-8"), file_name="Crane_Compliance_MO32_Current.csv", key="dl_currentcsv")
 
 def _shade_cell(cell, hex_color):
     tc = cell._tc
@@ -420,7 +297,10 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
     for i,h in enumerate(headers):
         cell = tbl.rows[0].cells[i]
         cell.text = h
-        cell.paragraphs[0].runs[0].bold = True
+        try:
+            cell.paragraphs[0].runs[0].bold = True
+        except Exception:
+            pass
         _shade_cell(cell, "D9D9D9")
     for _, r in results_df.iterrows():
         row = tbl.add_row().cells
@@ -454,7 +334,10 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
             key_tbl = doc.add_table(rows=0, cols=2, style="Table Grid")
             def add_row(label, value):
                 r = key_tbl.add_row().cells
-                r[0].text = label; r[0].paragraphs[0].runs[0].bold = True; _shade_cell(r[0], "EEEEEE")
+                r[0].text = label; 
+                try: r[0].paragraphs[0].runs[0].bold = True
+                except Exception: pass
+                _shade_cell(r[0], "EEEEEE")
                 r[1].text = asciiize(safe_text(value))
             add_row("Make/Model", row.get("Crane Make/Model"))
             add_row("Serial Number", row.get("Serial Number"))
@@ -481,8 +364,12 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
                 ("Access/escape compliant?", row.get("Access/escape to cabin compliant? (Y/N)")),
             ]
             tick_tbl = doc.add_table(rows=1, cols=2, style="Table Grid")
-            tick_tbl.rows[0].cells[0].text = "Item"; tick_tbl.rows[0].cells[0].paragraphs[0].runs[0].bold = True
-            tick_tbl.rows[0].cells[1].text = "Y/N"; tick_tbl.rows[0].cells[1].paragraphs[0].runs[0].bold = True
+            tick_tbl.rows[0].cells[0].text = "Item"; 
+            try: tick_tbl.rows[0].cells[0].paragraphs[0].runs[0].bold = True
+            except Exception: pass
+            tick_tbl.rows[0].cells[1].text = "Y/N"; 
+            try: tick_tbl.rows[0].cells[1].paragraphs[0].runs[0].bold = True
+            except Exception: pass
             _shade_cell(tick_tbl.rows[0].cells[0], "D9D9D9"); _shade_cell(tick_tbl.rows[0].cells[1], "D9D9D9")
             for lab,val in ticks:
                 rr = tick_tbl.add_row().cells
@@ -496,8 +383,12 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
                 if notes: doc.add_paragraph(asciiize(notes), style="List Paragraph")
                 if lg_notes: doc.add_paragraph(asciiize(lg_notes), style="List Paragraph")
 
-            rr = results_df[results_df["Crane #"]==crane_no]
-            if not rr.empty:
+            rr = None
+            try:
+                rr = results_df[results_df["Crane #"]==crane_no]
+            except Exception:
+                pass
+            if rr is not None and not rr.empty:
                 issues = safe_text(rr.iloc[0]["Issues (FAIL)"])
                 attn   = safe_text(rr.iloc[0]["Attention (notes/evidence)"])
                 due    = safe_text(rr.iloc[0]["Due soon"])
@@ -505,11 +396,14 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
                 _add_heading(doc, "Compliance Findings", 14)
                 box = doc.add_table(rows=3, cols=1, style="Table Grid")
                 cell = box.rows[0].cells[0]; _shade_cell(cell, "FF0000")
-                para = cell.paragraphs[0]; para.add_run("ISSUES (FAIL): ").bold = True; para.add_run(asciiize(issues) if issues else "None recorded.")
+                cell.paragraphs[0].add_run("ISSUES (FAIL): ").bold = True
+                cell.paragraphs[0].add_run(asciiize(issues) if issues else "None recorded.")
                 cell = box.rows[1].cells[0]; _shade_cell(cell, "FFC000")
-                para = cell.paragraphs[0]; para.add_run("ATTENTION: ").bold = True; para.add_run(asciiize(attn) if attn else "None recorded.")
+                cell.paragraphs[0].add_run("ATTENTION: ").bold = True
+                cell.paragraphs[0].add_run(asciiize(attn) if attn else "None recorded.")
                 cell = box.rows[2].cells[0]; _shade_cell(cell, "D9E1F2")
-                para = cell.paragraphs[0]; para.add_run("DUE SOON: ").bold = True; para.add_run(asciiize(due) if due else "None.")
+                cell.paragraphs[0].add_run("DUE SOON: ").bold = True
+                cell.paragraphs[0].add_run(asciiize(due) if due else "None.")
 
         def add_gallery(title, blobs):
             if not blobs: return
@@ -544,95 +438,6 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
         doc.save(out_path); return None
     buff = io.BytesIO(); doc.save(buff); buff.seek(0); return buff
 
-def build_pdf(results_df, df_original, photos_map, photos_loose_map, out_path=None):
-    pdf = FPDF(format="A4", unit="mm")
-    pdf.set_auto_page_break(auto=True, margin=12)
-    pdf.add_page()
-    pdf.set_font("Helvetica","B",16)
-    pdf.cell(0,10, asciiize("Crane Compliance Check - MO32"), ln=1)
-    pdf.set_font("Helvetica","",11)
-    pdf.cell(0,6, asciiize(f"Date: {TODAY_STR}"), ln=1)
-    pdf.cell(0,6, asciiize(f"Vessel: {safe_text(df_original['Vessel Name'].iloc[0])}   IMO: {safe_text(df_original['IMO'].iloc[0])}"), ln=1)
-    pdf.ln(2)
-
-    # table headers
-    headers = ["Crane #","Vessel","IMO","Serial #","SWL (t)","Shift","Weather","LG Serial","LG SWL","Status","Issues","Attention/Due"]
-    widths  = [12,26,22,26,14,18,28,26,16,16,40,40]
-    pdf.set_font("Helvetica","B",7)
-    for h,w in zip(headers,widths):
-        pdf.cell(w,6, asciiize(h), border=1)
-    pdf.ln(6)
-
-    # table rows
-    pdf.set_font("Helvetica","",7)
-    for _, r in results_df.iterrows():
-        vals = [
-            safe_text(r["Crane #"]),
-            safe_text(r["Vessel Name"]),
-            safe_text(r["IMO"]),
-            safe_text(r["Serial Number"]),
-            safe_text(r["SWL (t)"]),
-            safe_text(r.get("Shift","")),
-            safe_text(r.get("Weather","")),
-            safe_text(r.get("Loose Gear Serial","")),
-            safe_text(r.get("Loose Gear SWL (t)","")),
-            safe_text(r["Status"]),
-            asciiize(safe_text(r["Issues (FAIL)"])),
-            asciiize("; ".join([p for p in [safe_text(r["Attention (notes/evidence)"]), safe_text(r["Due soon"])] if p]))
-        ]
-        y_max = pdf.get_y()
-        for v,w in zip(vals,widths):
-            x0,y0 = pdf.get_x(), pdf.get_y()
-            pdf.multi_cell(w,4, asciiize(v), border=1)
-            y_max = max(y_max, pdf.get_y())
-            pdf.set_xy(x0+w, y0)
-        pdf.set_y(y_max)
-
-    # per-crane images
-    with tempfile.TemporaryDirectory() as tmpd:
-        for crane_no in [1,2,3,4]:
-            imgs = photos_map.get(crane_no) or []; imgs_lg = photos_loose_map.get(crane_no) or []
-            if not imgs and not imgs_lg: continue
-            pdf.add_page()
-            pdf.set_font("Helvetica","B",12)
-            pdf.cell(0,7, asciiize(f"Crane {crane_no} - Photos"), ln=1)
-
-            def add_images(img_bytes_list, label, prefix):
-                if not img_bytes_list: return
-                pdf.set_font("Helvetica","B",10); pdf.cell(0,5, asciiize(label), ln=1)
-                pdf.set_font("Helvetica","",10)
-                x0 = pdf.get_x(); y0 = pdf.get_y(); x = x0; y = y0; max_h = 0
-                for i, data in enumerate(img_bytes_list[:8]):
-                    try:
-                        fn = os.path.join(tmpd, f"{prefix}_{crane_no}_{i}.jpg")
-                        with open(fn, "wb") as imgf: imgf.write(data)
-                        pdf.image(fn, x=x, y=y, w=65)
-                        new_h = 48; max_h = max(max_h, new_h)
-                        if (i % 2)==1:
-                            y += max_h + 3; x = x0; max_h = 0
-                        else:
-                            x += 70
-                    except Exception as e:
-                        pdf.multi_cell(0,5, asciiize(f"(Could not embed image: {e})"))
-                pdf.ln(5)
-
-            add_images(imgs, "Crane Photos:", "cr")
-            add_images(imgs_lg, "Loose Gear Photos:", "lg")
-
-    if out_path:
-        pdf.output(out_path)
-        return None
-
-    pdf_buf = pdf.output(dest="S")
-    if isinstance(pdf_buf, bytearray):
-        pdf_bytes = bytes(pdf_buf)
-    elif isinstance(pdf_buf, bytes):
-        pdf_bytes = pdf_buf
-    else:  # str (old pyfpdf)
-        pdf_bytes = pdf_buf.encode("latin-1","ignore")
-
-    return io.BytesIO(pdf_bytes)
-
 def save_case(results_df, df_original, photos_map, photos_loose_map):
     base = "mo32_cases"; os.makedirs(base, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S"); case_dir = os.path.join(base, f"case_{stamp}"); os.makedirs(case_dir, exist_ok=True)
@@ -646,39 +451,238 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
                 with open(os.path.join(pdir, f"photo_{i+1}.jpg"), "wb") as imgf:
                     imgf.write(data)
     build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=os.path.join(case_dir,"MO32_Crane_Compliance_Report.docx"))
-    build_pdf(results_df, df_original, photos_map, photos_loose_map, out_path=os.path.join(case_dir,"MO32_Crane_Compliance_Report.pdf"))
     return case_dir
 
-# Buttons: evaluate, demo
-if eval_clicked:
-    df_input = pd.DataFrame(crane_data, columns=CHECK_COLUMNS)
-    try:
-        out_df = evaluate(df_input)
-        st.subheader("Results (PASS/ATTENTION/FAIL)")
-        st.dataframe(out_df, use_container_width=True)
-        st.success("Evaluation complete. Download your reports below.")
-        docx_io = build_docx(out_df, df_input, photos_map, photos_loose_map)
-        st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_real")
-        pdf_io = build_pdf(out_df, df_input, photos_map, photos_loose_map)
-        st.download_button("Download PDF report (.pdf)", pdf_io.getvalue(), file_name="MO32_Crane_Compliance_Report.pdf", key="dl_pdf_real")
-        case_dir = save_case(out_df, df_input, photos_map, photos_loose_map)
-        st.info(f"Saved a copy of this submission to: {case_dir}")
-    except Exception as e:
-        st.error(f"Error during evaluation: {e}")
+# -------------------------
+# Page: Vessel Inspection
+# -------------------------
+def page_inspection():
+    st.title("Vessel Inspection")
+    st.caption(APP_VER + " – DOCX export only; CSV import; photos embedded.")
 
-if demo_clicked:
-    demo_df = pd.DataFrame([
-        [1,"MV Example","9526722","NMF DKII","CRN-123","45","10-05-2019","08-05-2022","01-06-2025","Joe Bloggs (Comp)","AMSA365-111","Y","Y","Y","Y","Y","Y","Y","Y","Night","Raining",
-         "Y","Y","Controls slightly sloppy at low speed",
-         "LG-001","40","LGCERT-789","15-06-2025","hook latch slightly bent"]
-    ], columns=CHECK_COLUMNS)
-    try:
-        out_df = evaluate(demo_df)
-        st.subheader("Results (PASS/ATTENTION/FAIL) - Demo")
-        st.dataframe(out_df, use_container_width=True)
-        docx_io = build_docx(out_df, demo_df, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
-        st.download_button("Download Word report (.docx) - Demo", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report_DEMO.docx", key="dl_docx_demo")
-        pdf_io = build_pdf(out_df, demo_df, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
-        st.download_button("Download PDF report (.pdf) - Demo", pdf_io.getvalue(), file_name="MO32_Crane_Compliance_Report_DEMO.pdf", key="dl_pdf_demo")
-    except Exception as e:
-        st.error(f"Error during demo evaluation: {e}")
+    with st.sidebar:
+        st.header("Options")
+        st.caption("DOCX only (photos embedded; DD-MM-YYYY)")
+        st.subheader("CSV (optional)")
+        csv_up = st.file_uploader("Import CSV (optional)", type=["csv"], key="u_csv")
+        if csv_up is not None:
+            try:
+                df_loaded = pd.read_csv(csv_up)
+                st.success("CSV imported. Use 'Evaluate imported CSV' to generate DOCX.")
+                if st.button("Evaluate imported CSV", key="btn_eval_csv"):
+                    out_df = evaluate(df_loaded)
+                    st.subheader("Results (PASS/ATTENTION/FAIL) — Imported CSV")
+                    st.dataframe(out_df, use_container_width=True)
+                    docx_io = build_docx(out_df, df_loaded, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
+                    st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_csv")
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
+        if st.button("Download blank CSV", key="btn_blankcsv"):
+            df_blank = pd.DataFrame([[i+1] + [""]*(len(CHECK_COLUMNS)-1) for i in range(4)], columns=CHECK_COLUMNS)
+            st.download_button("Save blank CSV", df_blank.to_csv(index=False).encode("utf-8"), file_name="Crane_Compliance_MO32_Blank.csv", key="dl_blankcsv")
+
+    st.markdown("### Job/Vessel info")
+    colv1, colv2, colv3 = st.columns(3)
+    with colv1: vessel = st.text_input("Vessel Name","", key="vessel")
+    with colv2: imo = st.text_input("IMO","", key="imo")
+    with colv3: operator = st.text_input("Inspector / Role","", key="operator")
+
+    st.markdown("### Crane checks")
+    crane_data = []; photos_map = {}; photos_loose_map = {}
+    for n in [1,2,3,4]:
+        with st.expander(f"Crane {n}", expanded=(n==1)):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                make_model = st.text_input(f"Crane {n} Make/Model", key=f"mm{n}")
+                serial = st.text_input(f"Crane {n} Serial Number", key=f"sn{n}")
+            with c2:
+                swl = st.text_input(f"Crane {n} SWL (t)", key=f"swl{n}")
+                install = st.text_input(f"Install/Commission Date (DD-MM-YYYY)", key=f"inst{n}")
+            with c3:
+                proof = st.text_input("Last 5-year Proof Test Date (DD-MM-YYYY)", key=f"p5{n}")
+                annual = st.text_input("Last Annual Thorough Exam Date (DD-MM-YYYY)", key=f"a12{n}")
+            c4,c5 = st.columns(2)
+            with c4:
+                annual_by = st.text_input("Annual Exam By (Competent/Responsible Person)", key=f"by{n}")
+                cert_no = st.text_input("Certificate of Test # (AMSA 365/642/etc)", key=f"cert{n}")
+            with c5:
+                st.markdown("**Y/N items** (tick Y if compliant)")
+                y_cert = st.selectbox("Certificate Current? (AMSA 365/642 form)", ["","Y","N"], key=f"yc{n}")
+                y_reg  = st.selectbox("Register of MHE Onboard? (Maintenance & repair log)", ["","Y","N"], key=f"yr{n}")
+                y_pre  = st.selectbox("Pre-use Visual Exam OK? (before operation)", ["","Y","N"], key=f"yp{n}")
+                y_plan = st.selectbox("Rigging Plan/Drawings Onboard? (latest revision available)", ["","Y","N"], key=f"ypl{n}")
+                y_ctrl = st.selectbox("Controls labelled & accessible? (labels present, reachable)", ["","Y","N"], key=f"yct{n}")
+                y_lim  = st.selectbox("Limit switches operational?", ["","Y","N"], key=f"yl{n}")
+                y_brk  = st.selectbox("Brakes operational?", ["","Y","N"], key=f"yb{n}")
+                y_vis  = st.selectbox("Operator visibility adequate? (consider lighting & weather)", ["","Y","N"], key=f"yv{n}")
+                y_wth  = st.selectbox("Weather protection at controls? (canopy/cover, no ingress)", ["","Y","N"], key=f"yw{n}")
+                y_acc  = st.selectbox("Access/escape to cabin compliant? (ladder/handrails clear)", ["","Y","N"], key=f"ya{n}")
+            w1,w2 = st.columns([1,2])
+            with w1:
+                shift = st.selectbox("Shift/Lighting", ["","Day","Evening","Night"], key=f"shift{n}")
+            with w2:
+                wx = st.text_input("Weather conditions (e.g., Raining, Storming, Fog, Clear)", key=f"wx{n}")
+            notes = st.text_area("Notes / Defects", key=f"notes{n}", height=100)
+
+            up_crane = st.file_uploader(f"Crane {n} photos (JPG/PNG/HEIC; up to 8)", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True, key=f"photos{n}")
+            photos_map[n] = [ensure_jpeg(f.getvalue()) for f in (up_crane or [])]
+
+            st.markdown("#### Loose Gear (hook/block)")
+            lg1, lg2, lg3 = st.columns(3)
+            with lg1:
+                lg_serial = st.text_input("Hook/Block Serial Number", key=f"lgsn{n}")
+                lg_cert   = st.text_input("Certificate Number", key=f"lgcert{n}")
+            with lg2:
+                lg_swl = st.text_input("Hook SWL (t)", key=f"lgswl{n}")
+                lg_date = st.text_input("Last Inspection/Proof Date (DD-MM-YYYY)", key=f"lgdate{n}")
+            with lg3:
+                lg_notes = st.text_area("Loose Gear Notes", key=f"lgnotes{n}", height=80)
+
+            up_loose = st.file_uploader(f"Crane {n} loose gear photos (JPG/PNG/HEIC; up to 6)", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True, key=f"photos_loose{n}")
+            photos_loose_map[n] = [ensure_jpeg(f.getvalue()) for f in (up_loose or [])]
+
+            crane_data.append({
+                "Crane #": n, "Vessel Name": vessel, "IMO": imo,
+                "Crane Make/Model": make_model, "Serial Number": serial, "SWL (t)": swl,
+                "Install/Commission Date": install, "Last 5-year Proof Test Date": proof, "Last Annual Thorough Exam Date": annual,
+                "Annual Exam By (Competent/Responsible Person)": annual_by, "Certificate of Test # (AMSA 365/642/etc)": cert_no,
+                "Certificate Current? (Y/N)": y_cert, "Register of MHE Onboard? (Y/N)": y_reg, "Pre-use Visual Exam OK? (Y/N)": y_pre,
+                "Rigging Plan/Drawings Onboard? (Y/N)": y_plan, "Controls layout labelled & accessible? (Y/N)": y_ctrl,
+                "Limit switches operational? (Y/N)": y_lim, "Brakes operational? (Y/N)": y_brk, "Operator visibility adequate? (Y/N)": y_vis,
+                "Visibility: Shift (Day/Evening/Night)": shift, "Visibility: Weather conditions": wx,
+                "Weather protection at winch/controls? (Y/N)": y_wth, "Access/escape to cabin compliant? (Y/N)": y_acc, "Notes / Defects": notes,
+                "Loose Gear: Hook/Block Serial Number": lg_serial, "Loose Gear: Hook SWL (t)": lg_swl, "Loose Gear: Certificate Number": lg_cert,
+                "Loose Gear: Last Inspection/Proof Date": lg_date, "Loose Gear: Notes": lg_notes
+            })
+
+    st.divider()
+    left, mid, right = st.columns([2,1,1])
+    eval_clicked = left.button("Evaluate & Generate Report (DOCX)", type="primary", use_container_width=True, key="btn_eval")
+    csv_clicked  = mid.button("Download current inputs as CSV", use_container_width=True, key="btn_csv")
+    demo_clicked = right.button("Try demo (sample data)", use_container_width=True, key="btn_demo")
+
+    if csv_clicked:
+        df_now = pd.DataFrame(crane_data, columns=CHECK_COLUMNS)
+        st.download_button("Save this CSV now", df_now.to_csv(index=False).encode("utf-8"), file_name="Crane_Compliance_MO32_Current.csv", key="dl_currentcsv")
+
+    if eval_clicked:
+        df_input = pd.DataFrame(crane_data, columns=CHECK_COLUMNS)
+        try:
+            out_df = evaluate(df_input)
+            st.subheader("Results (PASS/ATTENTION/FAIL)")
+            st.dataframe(out_df, use_container_width=True)
+            st.success("Evaluation complete. Download your DOCX report below.")
+            docx_io = build_docx(out_df, df_input, photos_map, photos_loose_map)
+            st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_real")
+            case_dir = save_case(out_df, df_input, photos_map, photos_loose_map)
+            st.info(f"Saved a copy of this submission to: {case_dir}")
+        except Exception as e:
+            st.error(f"Error during evaluation: {e}")
+
+    if demo_clicked:
+        demo_df = pd.DataFrame([
+            [1,"MV Example","9526722","NMF DKII","CRN-123","45","10-05-2019","08-05-2022","01-06-2025","Joe Bloggs (Comp)","AMSA365-111","Y","Y","Y","Y","Y","Y","Y","Y","Night","Raining",
+             "Y","Y","Controls slightly sloppy at low speed",
+             "LG-001","40","LGCERT-789","15-06-2025","hook latch slightly bent"]
+        ], columns=CHECK_COLUMNS)
+        try:
+            out_df = evaluate(demo_df)
+            st.subheader("Results (PASS/ATTENTION/FAIL) - Demo")
+            st.dataframe(out_df, use_container_width=True)
+            docx_io = build_docx(out_df, demo_df, {1:[],2:[],3:[],4:[]}, {1:[],2:[],3:[],4:[]})
+            st.download_button("Download Word report (.docx) - Demo", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report_DEMO.docx", key="dl_docx_demo")
+        except Exception as e:
+            st.error(f"Error during demo evaluation: {e}")
+
+# -------------------------
+# Page: Search Vessels
+# -------------------------
+def page_search():
+    st.title("Search Vessels")
+    st.caption("Find previous inspections by Vessel Name or IMO number, and download past DOCX reports.")
+
+    base = "mo32_cases"
+    if not os.path.isdir(base):
+        st.info("No saved cases yet. Generate a report first from the Vessel Inspection page.")
+        return
+
+    q_name = st.text_input("Vessel Name (partial ok)", key="q_vessel").strip()
+    q_imo  = st.text_input("IMO Number (exact or partial)", key="q_imo").strip()
+
+    # Scan existing cases
+    rows = []
+    for d in sorted(os.listdir(base)):
+        case_dir = os.path.join(base, d)
+        if not os.path.isdir(case_dir): 
+            continue
+        inputs = os.path.join(case_dir, "inputs.csv")
+        results = os.path.join(case_dir, "results.csv")
+        docx = os.path.join(case_dir, "MO32_Crane_Compliance_Report.docx")
+        if not os.path.isfile(inputs):
+            continue
+        try:
+            df_in = pd.read_csv(inputs)
+            vessel = str(df_in.get("Vessel Name").iloc[0]) if "Vessel Name" in df_in.columns and len(df_in) else ""
+            imo = str(df_in.get("IMO").iloc[0]) if "IMO" in df_in.columns and len(df_in) else ""
+            # stamp included in case folder name: case_YYYYmmdd_HHMMSS
+            date_guess = d.replace("case_", "")
+            rows.append({
+                "case": d,
+                "vessel": vessel,
+                "imo": imo,
+                "date": date_guess,
+                "inputs": inputs,
+                "results": results if os.path.isfile(results) else "",
+                "docx": docx if os.path.isfile(docx) else ""
+            })
+        except Exception:
+            continue
+
+    # Filter
+    def match(row):
+        ok = True
+        if q_name:
+            ok = ok and (q_name.lower() in (row["vessel"] or "").lower())
+        if q_imo:
+            ok = ok and (q_imo.lower() in (row["imo"] or "").lower())
+        return ok
+
+    filtered = [r for r in rows if match(r)]
+    if q_name or q_imo:
+        st.write(f"Found {len(filtered)} matching cases.")
+    else:
+        st.write(f"Showing {len(filtered)} cases. Enter search terms to filter.")
+
+    if not filtered:
+        st.info("No matches.")
+        return
+
+    # Show results
+    for r in filtered:
+        with st.container():
+            c1, c2, c3, c4 = st.columns([3,2,2,2])
+            c1.markdown(f"**{r['vessel'] or '(No Vessel Name)'}**  \nIMO: {r['imo'] or '-'}")
+            c2.markdown(f"**Case:** {r['case']}")
+            c3.markdown(f"**Saved:** {r['date']}")
+            if r["docx"] and os.path.isfile(r["docx"]):
+                try:
+                    data = open(r["docx"], "rb").read()
+                    c4.download_button("Download DOCX", data, file_name=f"{r['case']}.docx", key=f"dl_{r['case']}")
+                except Exception as e:
+                    c4.write(f"(DOCX not readable: {e})")
+            else:
+                c4.write("(No DOCX)")
+            st.divider()
+
+# -------------------------
+# Router
+# -------------------------
+with st.sidebar:
+    st.markdown("## Pages")
+    page = st.radio("Navigate", ["Vessel Inspection", "Search Vessels"], index=0, key="page_radio")
+
+st.title("MO32 Crane Compliance - Auto Check")
+if page == "Vessel Inspection":
+    page_inspection()
+else:
+    page_search()
