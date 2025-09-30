@@ -462,21 +462,12 @@ if eval_clicked:
         out_df = evaluate(df_input)
         st.subheader("Results (PASS/ATTENTION/FAIL)")
         st.dataframe(out_df, use_container_width=True)
-        st.success("Evaluation complete. Download your report below.")
-
-        # ✅ PDF ONLY
+        st.success("Evaluation complete. Download your reports below.")
+        docx_io = build_docx(out_df, df_input, photos_map, photos_loose_map)
+        st.download_button("Download Word report (.docx)", docx_io.getvalue(), file_name="MO32_Crane_Compliance_Report.docx", key="dl_docx_real")
         pdf_io = build_pdf(out_df, df_input, photos_map, photos_loose_map)
-        st.download_button(
-            "Download PDF report (.pdf)",
-            pdf_io.getvalue(),
-            file_name="MO32_Crane_Compliance_Report.pdf",
-            key="dl_pdf_real"
-        )
-
-        # (Optional) This still saves both DOCX & PDF into the case folder.
-        # If you want to keep the on-disk DOCX for records, leave this as-is.
+        st.download_button("Download PDF report (.pdf)", pdf_io.getvalue(), file_name="MO32_Crane_Compliance_Report.pdf", key="dl_pdf_real")
         case_dir = save_case(out_df, df_input, photos_map, photos_loose_map)
         st.info(f"Saved a copy of this submission to: {case_dir}")
-
     except Exception as e:
         st.error(f"Error during evaluation: {e}")
