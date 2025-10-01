@@ -1,8 +1,8 @@
-
-import io, os, uuid, sqlite3, tempfile
+import io, os, uuid
 from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text  # NEW
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -11,58 +11,73 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from PIL import Image
 
-APP_VER = "v8.5 (Vessel Inspection + SQLite)"
-st.set_page_config(page_title="Crane Compliance - Checker", layout="wide")
+APP_VER = "v8.7.1 DOCX-only (Vessel Inspection + Search + st.connection)"
+st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
 
 TODAY = date.today()
 TODAY_STR = TODAY.strftime("%d-%m-%Y")  # DD-MM-YYYY
 DATE_FORMATS = ("%d-%m-%Y","%d/%m/%Y","%Y-%m-%d")
 
-# --- SQLite helper (uses a DB in the temp folder so it's writable on Streamlit Cloud) ---
-TMP_ROOT = tempfile.gettempdir()
-DB_PATH = os.path.join(TMP_ROOT, "inspections.db")
-os.makedirs(TMP_ROOT, exist_ok=True)
+# --- Paths INSIDE REPO ---
+BASE_DIR = os.path.join(os.path.dirname(__file__), "cases_data")
+CASES_DIR = os.path.join(BASE_DIR, "mo32_cases")
+os.makedirs(CASES_DIR, exist_ok=True)
 
-def db_init():
-    try:
-        con = sqlite3.connect(DB_PATH, check_same_thread=False)
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS inspections (
-            id TEXT PRIMARY KEY,
-            vessel TEXT,
-            imo TEXT,
-            created_at TEXT,
-            case_dir TEXT,
-            docx_path TEXT
-        )
-        """)
-        con.commit()
-        return con
-    except Exception as e:
-        st.warning(f"(DB unavailable: {e})")
-        return None
+# --- Streamlit SQL connection (DB file in repo) ---
+conn = st.connection(
+    "inspections",
+    type="sql",
+    url=f"sqlite:///{os.path.join(BASE_DIR, 'inspections.db')}"
+)
 
-DB = db_init()
+# Create table once (safe)
+try:
+    with conn.session as s:
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS inspections (
+                id TEXT PRIMARY KEY,
+                vessel TEXT,
+                imo TEXT,
+                created_at TEXT,
+                case_dir TEXT,
+                docx_path TEXT
+            )
+        """))
+        s.commit()
+except Exception as e:
+    st.warning(f"(DB init skipped: {e})")
 
 def db_insert(vessel, imo, created_at, case_dir, docx_path):
-    if not DB: return
     try:
-        DB.execute("INSERT OR REPLACE INTO inspections (id, vessel, imo, created_at, case_dir, docx_path) VALUES (?, ?, ?, ?, ?, ?)",
-                   (uuid.uuid4().hex, vessel or "", imo or "", created_at, case_dir or "", docx_path or ""))
-        DB.commit()
+        with conn.session as s:
+            s.execute(
+                text("""
+                    INSERT INTO inspections (id, vessel, imo, created_at, case_dir, docx_path)
+                    VALUES (:id, :vessel, :imo, :created_at, :case_dir, :docx_path)
+                """),
+                params={
+                    "id": uuid.uuid4().hex,
+                    "vessel": vessel or "",
+                    "imo": imo or "",
+                    "created_at": created_at,
+                    "case_dir": case_dir or "",
+                    "docx_path": docx_path or ""
+                }
+            )
+            s.commit()
     except Exception as e:
         st.warning(f"(DB insert skipped: {e})")
 
 def db_search(vessel_like, imo_like):
-    if not DB: return pd.DataFrame([], columns=["vessel","imo","created_at","case_dir","docx_path"])
     try:
         vl = f"%{vessel_like.strip()}%" if vessel_like else "%"
         il = f"%{imo_like.strip()}%" if imo_like else "%"
-        df = pd.read_sql_query(
-            "SELECT vessel, imo, created_at, case_dir, docx_path FROM inspections WHERE vessel LIKE ? AND imo LIKE ? ORDER BY created_at DESC",
-            DB, params=(vl, il)
+        df = conn.query(
+            "SELECT vessel, imo, created_at, case_dir, docx_path FROM inspections "
+            "WHERE vessel LIKE :vl AND imo LIKE :il ORDER BY created_at DESC",
+            params={"vl": vl, "il": il}
         )
-        return df
+        return df if df is not None else pd.DataFrame([], columns=["vessel","imo","created_at","case_dir","docx_path"])
     except Exception as e:
         st.warning(f"(DB search skipped: {e})")
         return pd.DataFrame([], columns=["vessel","imo","created_at","case_dir","docx_path"])
@@ -489,17 +504,10 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
     buff = io.BytesIO(); doc.save(buff); buff.seek(0); return buff
 
 def save_case(results_df, df_original, photos_map, photos_loose_map):
-    # Use temp dir to avoid permission issues and file-collision on Streamlit Cloud
-    base = os.path.join(TMP_ROOT, "mo32_cases")
-    # If something named base exists but is NOT a dir, remove and recreate
-    if os.path.exists(base) and not os.path.isdir(base):
-        try: os.remove(base)
-        except Exception: pass
-    os.makedirs(base, exist_ok=True)
-
+    # Save into repo folder
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     uniq = uuid.uuid4().hex[:6]
-    case_dir = os.path.join(base, f"case_{stamp}_{uniq}")
+    case_dir = os.path.join(CASES_DIR, f"case_{stamp}_{uniq}")
     os.makedirs(case_dir, exist_ok=False)
 
     df_original.to_csv(os.path.join(case_dir,"inputs.csv"), index=False)
@@ -519,8 +527,8 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
 # Page: Vessel Inspection
 # -------------------------
 def page_inspection():
-    st.title("Inspection")
-    st.caption(APP_VER + " – DOCX export; photos embedded; saved to temp folder; DB metadata.")
+    st.title("Vessel Inspection")
+    st.caption(APP_VER + " – DOCX export; photos embedded; saved in repo; DB metadata.")
 
     with st.sidebar:
         st.header("Options")
@@ -610,11 +618,13 @@ def page_inspection():
                 "Annual Exam By (Competent/Responsible Person)": annual_by, "Certificate of Test # (AMSA 365/642/etc)": cert_no,
                 "Certificate Current? (Y/N)": y_cert, "Register of MHE Onboard? (Y/N)": y_reg, "Pre-use Visual Exam OK? (Y/N)": y_pre,
                 "Rigging Plan/Drawings Onboard? (Y/N)": y_plan, "Controls layout labelled & accessible? (Y/N)": y_ctrl,
-                "Limit switches operational? (Y/N)": y_lim, "Brakes operational? (Y/N)": y_brk, "Operator visibility adequate? (Y/N)": y_vis,
-                "Visibility: Shift (Day/Evening/Night)": shift, "Visibility: Weather conditions": wx,
-                "Weather protection at winch/controls? (Y/N)": y_wth, "Access/escape to cabin compliant? (Y/N)": y_acc, "Notes / Defects": notes,
-                "Loose Gear: Hook/Block Serial Number": lg_serial, "Loose Gear: Hook SWL (t)": lg_swl, "Loose Gear: Certificate Number": lg_cert,
-                "Loose Gear: Last Inspection/Proof Date": lg_date, "Loose Gear: Notes": lg_notes
+                "Limit switches operational? (Y/N)": y_lim, "Brakes operational? (Y/N)": y_brk,
+                "Operator visibility adequate? (Y/N)": y_vis, "Visibility: Shift (Day/Evening/Night)": shift,
+                "Visibility: Weather conditions": wx, "Weather protection at winch/controls? (Y/N)": y_wth,
+                "Access/escape to cabin compliant? (Y/N)": y_acc, "Notes / Defects": notes,
+                "Loose Gear: Hook/Block Serial Number": lg_serial, "Loose Gear: Hook SWL (t)": lg_swl,
+                "Loose Gear: Certificate Number": lg_cert, "Loose Gear: Last Inspection/Proof Date": lg_date,
+                "Loose Gear: Notes": lg_notes
             })
 
     st.divider()
@@ -669,7 +679,7 @@ def page_inspection():
 # -------------------------
 def page_search():
     st.title("Search Vessels")
-    st.caption("Search DB (SQLite) and saved cases in temp folder; download past DOCX reports.")
+    st.caption("Search DB (SQLite in repo) and saved cases; download past DOCX reports.")
 
     q_name = st.text_input("Vessel Name (partial ok)", key="q_vessel").strip()
     q_imo  = st.text_input("IMO Number (exact or partial)", key="q_imo").strip()
@@ -696,16 +706,15 @@ def page_search():
     else:
         st.info("No matches in database.")
 
-    # --- Legacy folder scan in temp
-    st.markdown("#### Saved cases in temp folder")
-    base = os.path.join(TMP_ROOT, "mo32_cases")
-    if not os.path.isdir(base):
+    # --- Folder scan (in-repo)
+    st.markdown("#### Saved cases in repo")
+    if not os.path.isdir(CASES_DIR):
         st.info("No saved case folders yet.")
         return
 
     rows = []
-    for d in sorted(os.listdir(base)):
-        case_dir = os.path.join(base, d)
+    for d in sorted(os.listdir(CASES_DIR)):
+        case_dir = os.path.join(CASES_DIR, d)
         if not os.path.isdir(case_dir): continue
         inputs = os.path.join(case_dir, "inputs.csv")
         results = os.path.join(case_dir, "results.csv")
