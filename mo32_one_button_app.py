@@ -10,12 +10,15 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from PIL import Image
+from zoneinfo import ZoneInfo
 
-APP_VER = "v8.7.1 DOCX-only (Vessel Inspection + Search + st.connection)"
+APP_VER = "UPDATE v8.7"
 st.set_page_config(page_title="MO32 Crane Compliance - Auto Check", layout="wide")
 
-TODAY = date.today()
-TODAY_STR = TODAY.strftime("%d-%m-%Y")  # DD-MM-YYYY
+NOW = datetime.now(ZoneInfo("Australia/Melbourne"))
+TODAY = NOW.date()
+TODAY_STR = NOW.strftime("%d-%m-%Y")    # DD-MM-YYYY
+TIME_STR = NOW.strftime("%H:%M %Z")     # e.g., "09:12 AEDT"
 DATE_FORMATS = ("%d-%m-%Y","%d/%m/%Y","%Y-%m-%d")
 
 # --- Paths INSIDE REPO ---
@@ -95,7 +98,7 @@ def asciiize(s):
 CHECK_COLUMNS = [
     "Crane #","Vessel Name","IMO","Crane Make/Model","Serial Number","SWL (t)",
     "Install/Commission Date","Last 5-year Proof Test Date","Last Annual Thorough Exam Date",
-    "Annual Exam By (Competent/Responsible Person)","Certificate of Test # (AMSA 365/642/etc)",
+    "Annual Exam By (Competent/Responsible Person)","Certificate of Test # (AMSA 365 / AMSA 642 — or equivalent; e.g. DNV / LR / ABS / BV / Class ref)",
     "Certificate Current? (Y/N)","Register of MHE Onboard? (Y/N)","Pre-use Visual Exam OK? (Y/N)",
     "Rigging Plan/Drawings Onboard? (Y/N)","Controls layout labelled & accessible? (Y/N)",
     "Limit switches operational? (Y/N)","Brakes operational? (Y/N)","Operator visibility adequate? (Y/N)",
@@ -182,7 +185,7 @@ def contradiction_notes_check(row):
 
 def evidence_prompts(row):
     prompts = []
-    if yn(row.get("Certificate Current? (Y/N)")) and not safe_text(row.get("Certificate of Test # (AMSA 365/642/etc)")).strip():
+    if yn(row.get("Certificate Current? (Y/N)")) and not safe_text(row.get("Certificate of Test # (AMSA 365 / AMSA 642 — or equivalent; e.g. DNV / LR / ABS / BV / Class ref)")).strip():
         prompts.append("Certificate marked current but certificate number is blank - add ID/photo.")
     if yn(row.get("Register of MHE Onboard? (Y/N)")) and not safe_text(row.get("Annual Exam By (Competent/Responsible Person)")).strip():
         prompts.append("Register marked onboard - add last entry details/competent or responsible person.")
@@ -323,7 +326,7 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
     r1 = p1.add_run("Crane Compliance Inspection Report")
     r1.font.color.rgb = RGBColor(255,255,255); r1.bold = True; r1.font.size = Pt(22)
     p2 = right.paragraphs[0]; p2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    r2 = p2.add_run("Your Logo")
+    r2 = p2.add_run("Version 8.7")
     r2.font.color.rgb = RGBColor(255,255,255); r2.bold = True; r2.font.size = Pt(14)
 
     doc.add_paragraph("")
@@ -334,7 +337,7 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
     meta.paragraph_format.space_after = Pt(6)
     meta.add_run("Marine Orders 32 (MO32) – Stevedore AutoCheck\n").bold = True
     meta.add_run(f"Vessel: {vessel_name}    IMO: {imo_code}\n")
-    meta.add_run(f"Date: {TODAY_STR}    Inspector: {inspector}")
+    meta.add_run(f"Date: {TODAY_STR} {TIME_STR}    Inspector: {inspector}")
 
     doc.add_page_break()
 
@@ -411,7 +414,7 @@ def build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=N
             add_row("Last 5-year Proof Test Date", row.get("Last 5-year Proof Test Date"))
             add_row("Last Annual Thorough Exam Date", row.get("Last Annual Thorough Exam Date"))
             add_row("Exam By (Competent/Responsible Person)", row.get("Annual Exam By (Competent/Responsible Person)"))
-            add_row("Certificate of Test #", row.get("Certificate of Test # (AMSA 365/642/etc)"))
+            add_row("Certificate of Test #", row.get("Certificate of Test # (AMSA 365 / AMSA 642 — or equivalent; e.g. DNV / LR / ABS / BV / Class ref)"))
             add_row("Shift / Weather", f"{row.get('Visibility: Shift (Day/Evening/Night)')} / {row.get('Visibility: Weather conditions')}")
 
             doc.add_paragraph("")
@@ -521,6 +524,17 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
                     imgf.write(data)
 
     build_docx(results_df, df_original, photos_map, photos_loose_map, out_path=os.path.join(case_dir,"MO32_Crane_Compliance_Report.docx"))
+
+    # ---- ZIP the entire case folder for easy download ----
+    import zipfile
+    zip_path = os.path.join(case_dir, "case_files.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(case_dir):
+            for file in files:
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, case_dir)
+                zf.write(abs_path, rel_path)
+
     return case_dir
 
 # -------------------------
@@ -528,7 +542,7 @@ def save_case(results_df, df_original, photos_map, photos_loose_map):
 # -------------------------
 def page_inspection():
     st.title("Vessel Inspection")
-    st.caption(APP_VER + " – DOCX export; photos embedded; saved in repo; DB metadata.")
+    st.caption(APP_VER + " – Stevedore Vessel Database of Inspections.")
 
     with st.sidebar:
         st.header("Options")
@@ -569,12 +583,12 @@ def page_inspection():
                 swl = st.text_input(f"Crane {n} SWL (t)", key=f"swl{n}")
                 install = st.text_input(f"Install/Commission Date (DD-MM-YYYY)", key=f"inst{n}")
             with c3:
-                proof = st.text_input("Last 5-year Proof Test Date (DD-MM-YYYY)", key=f"p5{n}")
-                annual = st.text_input("Last Annual Thorough Exam Date (DD-MM-YYYY)", key=f"a12{n}")
+                proof = st.text_input(f"Last 5-year Proof Test Date (DD-MM-YYYY)", key=f"p5{n}")
+                annual = st.text_input(f"Last Annual Thorough Exam Date (DD-MM-YYYY)", key=f"a12{n}")
             c4,c5 = st.columns(2)
             with c4:
                 annual_by = st.text_input("Annual Exam By (Competent/Responsible Person)", key=f"by{n}")
-                cert_no = st.text_input("Certificate of Test # (AMSA 365/642/etc)", key=f"cert{n}")
+                cert_no = st.text_input("Certificate of Test # (AMSA 365 / AMSA 642 — or equivalent; e.g. DNV / LR / ABS / BV / Class ref)", key=f"cert{n}")
             with c5:
                 st.markdown("**Y/N items** (tick Y if compliant)")
                 y_cert = st.selectbox("Certificate Current? (AMSA 365/642 form)", ["","Y","N"], key=f"yc{n}")
@@ -615,7 +629,7 @@ def page_inspection():
                 "Crane #": n, "Vessel Name": vessel, "IMO": imo,
                 "Crane Make/Model": make_model, "Serial Number": serial, "SWL (t)": swl,
                 "Install/Commission Date": install, "Last 5-year Proof Test Date": proof, "Last Annual Thorough Exam Date": annual,
-                "Annual Exam By (Competent/Responsible Person)": annual_by, "Certificate of Test # (AMSA 365/642/etc)": cert_no,
+                "Annual Exam By (Competent/Responsible Person)": annual_by, "Certificate of Test # (AMSA 365 / AMSA 642 — or equivalent; e.g. DNV / LR / ABS / BV / Class ref)": cert_no,
                 "Certificate Current? (Y/N)": y_cert, "Register of MHE Onboard? (Y/N)": y_reg, "Pre-use Visual Exam OK? (Y/N)": y_pre,
                 "Rigging Plan/Drawings Onboard? (Y/N)": y_plan, "Controls layout labelled & accessible? (Y/N)": y_ctrl,
                 "Limit switches operational? (Y/N)": y_lim, "Brakes operational? (Y/N)": y_brk,
@@ -656,6 +670,17 @@ def page_inspection():
             db_insert(vessel_val, imo_val, created_at, case_dir, docx_path)
 
             st.info(f"Saved a copy of this submission to: {case_dir}")
+
+            # --- Offer ZIP download of the whole case ---
+            zip_path = os.path.join(case_dir, "case_files.zip")
+            if os.path.exists(zip_path):
+                with open(zip_path, "rb") as f:
+                    st.download_button(
+                        "Download entire case (ZIP)",
+                        f.read(),
+                        file_name=f"{os.path.basename(case_dir)}.zip",
+                        key="dl_zip_case"
+                    )
         except Exception as e:
             st.error(f"Error during evaluation: {e}")
 
@@ -765,6 +790,22 @@ def page_search():
                 c4.write("(No DOCX)")
             st.divider()
 
+    # --- Local folder access (NEW) ---
+    st.markdown("#### Local storage path")
+    st.info(f"All reports are saved inside:\n\n`{CASES_DIR}`")
+
+    import platform, subprocess
+    if st.button("Open local cases folder"):
+        try:
+            if platform.system() == "Windows":
+                os.startfile(CASES_DIR)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.Popen(["open", CASES_DIR])
+            else:  # Linux
+                subprocess.Popen(["xdg-open", CASES_DIR])
+        except Exception as e:
+            st.error(f"Could not open folder: {e}")
+
 # -------------------------
 # Router
 # -------------------------
@@ -772,8 +813,9 @@ with st.sidebar:
     st.markdown("## Pages")
     page = st.radio("Navigate", ["Vessel Inspection", "Search Vessels"], index=0, key="page_radio")
 
-st.title("MO32 Crane Compliance - Auto Check")
+st.title("MO32 Crane Compliance - Checker")
+
 if page == "Vessel Inspection":
     page_inspection()
-else:
+elif page == "Search Vessels":
     page_search()
